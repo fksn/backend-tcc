@@ -61,39 +61,69 @@ app.get('/', (req, res) => {
 // --- 5. WORKER MQTT (Ouvinte Automático) ---
 // ========================================================
 
+// ========================================================
+// --- 5. WORKER MQTT (CORRIGIDO E ROBUSTO) ---
+// ========================================================
+
 const MQTT_BROKER = 'mqtt://broker.hivemq.com';
-// O "+" permite pegar mensagens de qualquer usuário (ex: academia/joao/contador)
 const MQTT_TOPIC = 'academia/+/contador'; 
 
-console.log("📡 Iniciando conexão MQTT...");
-const mqttClient = mqtt.connect(MQTT_BROKER);
+console.log("📡 Tentando conectar ao Broker MQTT...");
+
+// Configuração explícita para evitar desconexões
+const mqttClient = mqtt.connect(MQTT_BROKER, {
+    clientId: 'Backend-Render-' + Math.random().toString(16).substr(2, 8), // ID Único
+    connectTimeout: 10 * 1000, // 10 segundos para desistir
+    reconnectPeriod: 1000, // Tenta reconectar a cada 1 segundo se cair
+    clean: true
+});
+
+mqttClient.on('connect', () => {
+  console.log('✅ SUCESSO: Backend conectado ao HiveMQ!');
+  mqttClient.subscribe(MQTT_TOPIC, (err) => {
+    if (!err) {
+      console.log(`👂 Ouvindo tópico: ${MQTT_TOPIC}`);
+    } else {
+      console.error('❌ Erro ao assinar tópico:', err);
+    }
+  });
+});
+
+// --- NOVOS LOGS DE ERRO (PARA DESCOBRIR O PROBLEMA) ---
+mqttClient.on('error', (err) => {
+  console.error('❌ Erro CRÍTICO no MQTT:', err.message);
+});
+
+mqttClient.on('offline', () => {
+  console.log('⚠️ Backend está OFFLINE do MQTT (Tentando reconectar...)');
+});
 
 mqttClient.on('message', async (topic, message) => {
   try {
     const payload = JSON.parse(message.toString());
-    console.log(`📩 MQTT recebido:`, payload);
+    console.log(`📩 Recebido [${topic}]:`, payload);
 
-    // Lógica de Salvamento
     if (payload.status === 'finalizado' && payload.reps > 0) {
-      
-      console.log("💾 Salvando treino completo...");
+      console.log("💾 Processando fim de treino...");
+
+      // Verifica se o userId veio correto
+      const userIdFinal = payload.userId && payload.userId !== "" ? payload.userId : "Desconhecido";
 
       const novoTreino = new Treino({
-        userId: payload.userId || "anonimo",
+        userId: userIdFinal,
         machine: "LegPress",
         reps: [payload.reps],
-        
-        // CAPTURA OS NOVOS DADOS DO JSON
-        descanso: [payload.restTime], // O ESP32 vai mandar como "restTime"
-        tempoTotal: payload.totalTime // O ESP32 vai mandar como "totalTime"
+        descanso: [payload.restTime || 0], 
+        tempoTotal: payload.totalTime || "00:00",
+        data: new Date()
       });
 
       await novoTreino.save();
-      console.log("✅ Treino salvo com métricas de tempo!");
+      console.log(`✅ Treino de ${userIdFinal} salvo no Banco!`);
     }
 
   } catch (erro) {
-    console.error("❌ Erro:", erro.message);
+    console.error("❌ Erro ao processar mensagem:", erro.message);
   }
 });
 
